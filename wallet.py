@@ -8,7 +8,7 @@ from crypto_utils import (
     PubEncScheme, PubEncPublicKey, PubEncPrivateKey, PubEncCiphertext,
 )
 from chain_utils import compute_txid, compute_block_hash
-from models import Blockchain
+from models import Blockchain, OutIndex, TxID, TxInput, TxOutput, Value
 from address import address, authkey, generate_addr_and_key
 from transaction import Transaction
 
@@ -31,6 +31,11 @@ class Wallet:
     ) -> None:
         self.auth_key = auth_key
         self.addr = addr
+        self.owned_utxos = {}
+        self.output_graph = {}
+        self.processed_blocks = 0
+        self.last_seen_hash = None
+        self.tainted_cache = {}
 
     # -----------------------------------------------------------------------
     # Pre-implemented accessors — do not modify
@@ -58,7 +63,14 @@ class Wallet:
         Decrypt and reconstruct a Wallet from a saved wallet file dict.
         Raises ValueError for wrong passphrase or malformed file.
         """
-        raise NotImplementedError
+        try:
+            key = SymEncScheme.keygen(passphrase)
+            ciphertext = SymCiphertext(wallet_file["ciphertext"])
+            plaintext = SymEncScheme.dec(key, ciphertext)
+            data = json.loads(plaintext.decode("utf-8"))
+            return cls(authkey(data["auth_key"]), address(data["addr"]))
+        except Exception as e:
+            raise ValueError("Failed to load wallet: " + str(e))
 
     def save(self, passphrase: str) -> dict:
         """
@@ -70,7 +82,17 @@ class Wallet:
         Each call to save() must produce a different dict even when the
         passphrase is the same — use fresh randomness on every call.
         """
-        raise NotImplementedError
+        key = SymEncScheme.keygen(passphrase)
+        plaintext = json.dumps({
+            "auth_key": self.auth_key,
+            "addr": self.addr,
+        }).encode("utf-8")
+
+        ciphertext = SymEncScheme.enc(key, plaintext)
+        return {
+            "scheme": "sym",
+            "ciphertext": ciphertext,
+        }
 
     def scan_for_coins(self, chain: Blockchain) -> list[dict]:
         """
@@ -97,7 +119,37 @@ class Wallet:
 
         Non-extension detection must be efficient.
         """
-        raise NotImplementedError
+        if len(chain) == 0:
+            return []
+        if self.processed_blocks > 0:
+            if len(chain) < self.processed_blocks:
+                raise ValueError("Provided chain is shorter than previously seen chain.")
+            previous_seen = compute_block_hash(chain[self.processed_blocks - 1])
+            if previous_seen != self.last_seen_hash:
+                raise ValueError("Provided chain is not an extension of previously seen chain.")
+        for block in chain[self.processed_blocks:]:
+            tx = block.transaction
+            txid = compute_txid(tx)
+            parent_outpoints = [(inp.prev_txid, inp.prev_out_idx) for inp in tx.txinputs]
+            for inp in tx.inputs:
+                spent = (inp.prev_txid, inp.prev_out_idx)
+                self.owned_utxos.pop(spent, None)
+            for index, out in enumerate(tx.txoutputs):
+                outpoint = (txid, index)
+                self.output_graph[outpoint] = {
+                    "recipient": out.recipient,
+                    "parents": parent_outpoints,
+                }
+                if out.recipient == self.get_address():
+                    self.owned_utxos[outpoint] = {
+                        "txid": txid,
+                        "out_idx": index,
+                        "value": out.value,
+                        "recipient": out.recipient,
+                    }
+        self.processed_blocks = len(chain)
+        self.last_seen_hash = compute_block_hash(chain[-1])
+        return list(self.owned_utxos.values())
 
     def classify_coins_by_taint(
         self,
@@ -120,7 +172,27 @@ class Wallet:
         a changing blocklist efficiently — redundant traversal will not meet
         the efficiency requirements of the grading suite.
         """
-        raise NotImplementedError
+        def is_tainted(outpoint):
+            cache_key = (outpoint, tuple(sorted(blocklist)))
+            if cache_key in self.tainted_cache:
+                return self.tainted_cache[cache_key]
+            info = self.output_graph.get(outpoint)
+            if info is None:
+                return False
+            if info["recipient"] in blocklist:
+                self.tainted_cache[cache_key] = True
+                return True
+            result = any(is_tainted(parent) for parent in info["parents"])
+            self.tainted_cache[cache_key] = result
+            return result
+        tainted = []
+        untainted = []
+        for outpoint, utxo in self.owned_utxos.items():
+            if is_tainted(outpoint):
+                tainted.append(utxo)
+            else:
+                untainted.append(utxo)
+        return {"tainted": tainted, "untainted": untainted}
 
     def create_transaction(
         self,
@@ -146,4 +218,23 @@ class Wallet:
         Raises ValueError if the wallet's available balance is insufficient
         to cover the requested total.
         """
-        raise NotImplementedError
+        if len(recipients) != len(values):
+            raise ValueError("Recipients and values lists must have the same length.")
+        total_needed = sum(values)
+        selected = []
+        selected_total = 0
+        for utxo in self.owned_utxos.values():
+            selected.append(utxo)
+            selected_total += utxo["value"]
+            if selected_total >= total_needed:
+                break
+        if selected_total < total_needed:
+            raise ValueError("Insufficient funds to cover the requested total.")
+        txinputs = [TxInput(TxID(utxo["txid"]), OutIndex(utxo["out_idx"])) for utxo in selected]
+        txoutputs = [TxOutput(Value(value), str(recipient)) for recipient, value in zip(recipients, values)]
+        change = selected_total - total_needed
+        if change > 0:
+            txoutputs.append(TxOutput(Value(change), str(self.get_address())))
+        tx = Transaction(txinputs=txinputs, txoutputs=txoutputs)
+        tx.authorize_tx([self.get_authkey()] * len(txinputs))
+        return tx
