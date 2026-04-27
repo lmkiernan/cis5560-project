@@ -41,14 +41,15 @@ class Validator:
         seen_inputs = set()
         input_totals = 0
         input_owners = []
+        missing = object()
         for txinput in authed_tx.txinputs:
             outpoint = (txinput.prev_txid, txinput.prev_out_idx)
             if outpoint in seen_inputs:
                 raise ValueError(f"Duplicate input outpoint: {outpoint}")
-            if outpoint not in self.utxos:
+            prev_output = self.utxos.get(outpoint, missing)
+            if prev_output is missing:
                 raise ValueError(f"Input references non-existent or already-spent UTXO: {outpoint}")
             seen_inputs.add(outpoint)
-            prev_output = self.utxos[outpoint]
             input_totals += prev_output.value
             input_owners.append(prev_output.recipient)
         

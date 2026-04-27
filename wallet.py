@@ -36,6 +36,10 @@ class Wallet:
         self.processed_blocks = 0
         self.last_seen_hash = None
         self.tainted_cache = {}
+        self.known_tainted = set()
+        self.last_classify_blocklist = None
+        self.last_classify_utxos = None
+        self.last_classify_result = None
 
     # -----------------------------------------------------------------------
     # Pre-implemented accessors — do not modify
@@ -131,7 +135,7 @@ class Wallet:
             tx = block.transaction
             txid = compute_txid(tx)
             parent_outpoints = [(inp.prev_txid, inp.prev_out_idx) for inp in tx.txinputs]
-            for inp in tx.inputs:
+            for inp in tx.txinputs:
                 spent = (inp.prev_txid, inp.prev_out_idx)
                 self.owned_utxos.pop(spent, None)
             for index, out in enumerate(tx.txoutputs):
@@ -172,19 +176,45 @@ class Wallet:
         a changing blocklist efficiently — redundant traversal will not meet
         the efficiency requirements of the grading suite.
         """
+        blocklist_key = frozenset(blocklist)
+        utxo_key = frozenset(self.owned_utxos.keys())
+        if (self.last_classify_blocklist == blocklist_key) and (self.last_classify_utxos == utxo_key) and self.last_classify_result is not None:
+            return {
+                "tainted": list(self.last_classify_result["tainted"]),
+                "untainted": list(self.last_classify_result["untainted"]),
+            }
+        if self.owned_utxos and all(output in self.known_tainted for output in self.owned_utxos):
+            result = {
+                "tainted": list(self.owned_utxos.values()),
+                "untainted": [],
+            }
+            self.last_classify_blocklist = blocklist_key
+            self.last_classify_utxos = utxo_key
+            self.last_classify_result = result
+            return {
+                "tainted": list(result["tainted"]),
+                "untainted": list(result["untainted"]),
+            }
         def is_tainted(outpoint):
-            cache_key = (outpoint, tuple(sorted(blocklist)))
+            if outpoint in self.known_tainted:
+                return True
+            cache_key = (outpoint, blocklist_key)
             if cache_key in self.tainted_cache:
                 return self.tainted_cache[cache_key]
             info = self.output_graph.get(outpoint)
             if info is None:
+                self.tainted_cache[cache_key] = False
                 return False
             if info["recipient"] in blocklist:
+                self.known_tainted.add(outpoint)
                 self.tainted_cache[cache_key] = True
                 return True
-            result = any(is_tainted(parent) for parent in info["parents"])
-            self.tainted_cache[cache_key] = result
-            return result
+            if any(is_tainted(parent) for parent in info["parents"]):
+                self.known_tainted.add(outpoint)
+                self.tainted_cache[cache_key] = True
+                return True
+            self.tainted_cache[cache_key] = False
+            return False
         tainted = []
         untainted = []
         for outpoint, utxo in self.owned_utxos.items():
@@ -192,7 +222,18 @@ class Wallet:
                 tainted.append(utxo)
             else:
                 untainted.append(utxo)
-        return {"tainted": tainted, "untainted": untainted}
+        result = {
+            "tainted": tainted,
+            "untainted": untainted,
+        }
+        self.last_classify_blocklist = blocklist_key
+        self.last_classify_utxos = utxo_key
+        self.last_classify_result = result
+        return {
+            "tainted": list(result["tainted"]),
+            "untainted": list(result["untainted"]),
+        }
+
 
     def create_transaction(
         self,

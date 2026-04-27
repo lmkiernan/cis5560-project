@@ -99,7 +99,7 @@ class Transaction:
         """
         if len(authkeys) != len(self.txinputs):
             raise ValueError("Number of authkeys must match number of txinputs.")
-        message = self._message_bytes()
+        message = self.message_bytes()
         self.signatures = [SignScheme.sign(authkey, message) for authkey in authkeys]
 
     def check_authorization(self, input_addresses: list[address]) -> bool:
@@ -121,7 +121,7 @@ class Transaction:
             if len(input_addresses) != len(self.txinputs) or len(signatures) != len(self.txinputs):
                 return False
             message = self.message_bytes()
-            return all( SignScheme.verify(addr, message, sig) for addr, sig in zip(input_addresses, signatures))
+            return all(SignScheme.verify(addr, message, sig) for addr, sig in zip(input_addresses, signatures))
         except Exception:
             return False
 
