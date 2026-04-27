@@ -17,13 +17,11 @@ from this module at load time.  If those names are not defined here, every
 import will fail with an ImportError.
 """
 
-# TODO: import the key types you need from crypto_utils.
-
+from crypto_utils import SignPublicKey, SignPrivateKey, SignScheme
 # Placeholder definitions — replace both of these with your chosen types from
 # crypto_utils before implementing anything else.
-address = str   # TODO: replace with your chosen address type from crypto_utils
-authkey = str   # TODO: replace with your chosen authkey type from crypto_utils
-
+address = SignPublicKey   
+authkey = SignPrivateKey  
 
 def generate_addr_and_key() -> tuple["address", "authkey"]:
     """
@@ -31,5 +29,6 @@ def generate_addr_and_key() -> tuple["address", "authkey"]:
 
     Wallet.create() calls this function — you do not need to modify wallet.py.
     """
+    private_key, public_key = SignScheme.keygen()
     # TODO: replace with an appropriate means of generating an address and authorization key
-    (None, None)
+    return tuple[public_key, private_key]
