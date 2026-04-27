@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+
+from crypto_utils import SignScheme
 
 from models import TxInput, TxOutput
 from address import address, authkey
@@ -54,6 +57,7 @@ class Transaction:
         return {
             "txinputs": [inp.to_dict() for inp in self.txinputs],
             "txoutputs": [out.to_dict() for out in self.txoutputs],
+            "signatures": getattr(self, "signatures", []),
         }
 
     @classmethod
@@ -67,14 +71,21 @@ class Transaction:
         Use data.get("your_field", default) to handle dicts that predate
         your auth field.
         """
-        return cls(
+        tx = cls(
             txinputs=[TxInput.from_dict(inp) for inp in data.get("txinputs", [])],
             txoutputs=[TxOutput.from_dict(out) for out in data.get("txoutputs", [])],
         )
+        tx.signatures = data.get("signatures", [])
+        return tx
 
     # -----------------------------------------------------------------------
     # To implement
     # -----------------------------------------------------------------------
+    def unsigned_dict(self) -> dict:
+        return { "txinputs": [inp.to_dict() for inp in self.txinputs], "txoutputs": [out.to_dict() for out in self.txoutputs]}
+
+    def message_bytes(self) -> bytes:
+        return json.dumps( self.unsigned_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     def authorize_tx(self, authkeys: list[authkey]) -> None:
         """
@@ -86,7 +97,10 @@ class Transaction:
         as attributes on self. After this call, check_authorization must return
         True when passed the matching list of addresses.
         """
-        raise NotImplementedError
+        if len(authkeys) != len(self.txinputs):
+            raise ValueError("Number of authkeys must match number of txinputs.")
+        message = self._message_bytes()
+        self.signatures = [SignScheme.sign(authkey, message) for authkey in authkeys]
 
     def check_authorization(self, input_addresses: list[address]) -> bool:
         """
@@ -98,4 +112,17 @@ class Transaction:
         Never raises; return False for any authorization failure including
         mismatched counts, invalid data, or wrong keys.
         """
-        raise NotImplementedError
+
+
+        try:
+            signatures = getattr(self, "signatures", None)
+            if signatures is None:
+                return False
+            if len(input_addresses) != len(self.txinputs) or len(signatures) != len(self.txinputs):
+                return False
+            message = self.message_bytes()
+            return all( SignScheme.verify(addr, message, sig) for addr, sig in zip(input_addresses, signatures))
+        except Exception:
+            return False
+
+            

@@ -29,6 +29,5 @@ def generate_addr_and_key() -> tuple["address", "authkey"]:
 
     Wallet.create() calls this function — you do not need to modify wallet.py.
     """
-    private_key, public_key = SignScheme.keygen()
-    # TODO: replace with an appropriate means of generating an address and authorization key
-    return tuple[public_key, private_key]
+    public_key, private_key = SignScheme.keygen()
+    return (public_key, private_key)
